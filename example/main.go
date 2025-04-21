@@ -16,10 +16,9 @@ func main() {
 	}
 
 	_, err := p.AppendRecords(context.Background(), "example.org.", []libdns.Record{
-		{
-			Name:  "_acme_whatever",
-			Type:  "TXT",
-			Value: "123456",
+		libdns.TXT{
+			Name: "_acme_whatever",
+			Text: "123456",
 		},
 	})
 	if err != nil {

@@ -46,7 +46,7 @@ func (c *client) updateRRs(ctx context.Context, zoneID string, recs []zones.Reso
 	return nil
 }
 
-func mergeRRecs(fullZone *zones.Zone, records []libdns.Record) ([]zones.ResourceRecordSet, error) {
+func mergeRRecs(fullZone *zones.Zone, records []libdns.RR) ([]zones.ResourceRecordSet, error) {
 	// pdns doesn't really have an append functionality, so we have to fake it by
 	// fetching existing rrsets for the zone and see if any already exist.  If so,
 	// merge those with the existing data.  Otherwise just add the record.
@@ -72,11 +72,11 @@ func mergeRRecs(fullZone *zones.Zone, records []libdns.Record) ([]zones.Resource
 			}
 			// now for our additions
 			for _, rec := range recs {
-				if !dupes[rec.Value] {
+				if !dupes[rec.Data] {
 					rr.Records = append(rr.Records, zones.Record{
-						Content: rec.Value,
+						Content: rec.Data,
 					})
-					dupes[rec.Value] = true
+					dupes[rec.Data] = true
 				}
 			}
 			rrsets = append(rrsets, rr)
@@ -89,7 +89,7 @@ func mergeRRecs(fullZone *zones.Zone, records []libdns.Record) ([]zones.Resource
 }
 
 // generate RessourceRecordSets that will delete records from zone
-func cullRRecs(fullZone *zones.Zone, records []libdns.Record) []zones.ResourceRecordSet {
+func cullRRecs(fullZone *zones.Zone, records []libdns.RR) []zones.ResourceRecordSet {
 	inHash := makeLDRecHash(records)
 	var rRSets []zones.ResourceRecordSet
 	for _, t := range fullZone.ResourceRecordSets {
@@ -109,7 +109,7 @@ func cullRRecs(fullZone *zones.Zone, records []libdns.Record) []zones.ResourceRe
 }
 
 // remove culls from rRSet record values
-func removeRecords(rRSet zones.ResourceRecordSet, culls []libdns.Record) zones.ResourceRecordSet {
+func removeRecords(rRSet zones.ResourceRecordSet, culls []libdns.RR) zones.ResourceRecordSet {
 	deleteItem := func(item string) []zones.Record {
 		recs := rRSet.Records
 		for i := len(recs) - 1; i >= 0; i-- {
@@ -120,12 +120,12 @@ func removeRecords(rRSet zones.ResourceRecordSet, culls []libdns.Record) zones.R
 		return recs
 	}
 	for _, c := range culls {
-		rRSet.Records = deleteItem(c.Value)
+		rRSet.Records = deleteItem(c.Data)
 	}
 	return rRSet
 }
 
-func convertLDHash(inHash map[string][]libdns.Record) []zones.ResourceRecordSet {
+func convertLDHash(inHash map[string][]libdns.RR) []zones.ResourceRecordSet {
 	var rrsets []zones.ResourceRecordSet
 	for _, recs := range inHash {
 		if len(recs) == 0 {
@@ -140,7 +140,7 @@ func convertLDHash(inHash map[string][]libdns.Record) []zones.ResourceRecordSet 
 		}
 		for _, rec := range recs {
 			rr.Records = append(rr.Records, zones.Record{
-				Content: rec.Value,
+				Content: rec.Data,
 			})
 		}
 		rrsets = append(rrsets, rr)
@@ -152,9 +152,9 @@ func key(Name, Type string) string {
 	return Name + ":" + Type
 }
 
-func makeLDRecHash(records []libdns.Record) map[string][]libdns.Record {
+func makeLDRecHash(records []libdns.RR) map[string][]libdns.RR {
 	// Keep track of records grouped by name + type
-	inHash := make(map[string][]libdns.Record)
+	inHash := make(map[string][]libdns.RR)
 
 	for _, r := range records {
 		k := key(r.Name, r.Type)
@@ -196,9 +196,11 @@ func (c *client) zoneID(ctx context.Context, zoneName string) (string, error) {
 	return shortZone.ID, nil
 }
 
-func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.Record {
-	out := make([]libdns.Record, len(records))
-	copy(out, records)
+func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.RR {
+	out := make([]libdns.RR, len(records))
+	for i, r := range records {
+		out[i] = r.RR()
+	}
 	for i := range out {
 		name := libdns.AbsoluteName(out[i].Name, zone)
 		if !strings.HasSuffix(name, ".") {
@@ -206,7 +208,7 @@ func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.Recor
 		}
 		out[i].Name = name
 		if out[i].Type == "TXT" {
-			out[i].Value = txtsanitize.TXTSanitize(out[i].Value)
+			out[i].Data = txtsanitize.TXTSanitize(out[i].Data)
 		}
 	}
 	return out
