@@ -199,7 +199,12 @@ func (c *client) zoneID(ctx context.Context, zoneName string) (string, error) {
 func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.RR {
 	out := make([]libdns.RR, len(records))
 	for i, r := range records {
-		out[i] = r.RR()
+		svcb, ok := r.(libdns.ServiceBinding)
+		if ok {
+			out[i] = svcbToRr(svcb)
+		} else {
+			out[i] = r.RR()
+		}
 	}
 	for i := range out {
 		name := libdns.AbsoluteName(out[i].Name, zone)
@@ -212,4 +217,85 @@ func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.RR {
 		}
 	}
 	return out
+}
+
+// This function is taken from libdns itself.
+func svcbToRr(s libdns.ServiceBinding) libdns.RR {
+	var name string
+	var recType string
+	if s.Scheme == "https" || s.Scheme == "http" || s.Scheme == "wss" || s.Scheme == "ws" {
+		recType = "HTTPS"
+		name = s.Name
+		if s.URLSchemePort == 443 || s.URLSchemePort == 80 {
+			// Ok, we'll correct your mistake for you.
+			s.URLSchemePort = 0
+		}
+	} else {
+		recType = "SVCB"
+		name = fmt.Sprintf("_%s.%s", s.Scheme, s.Name)
+	}
+
+	if s.URLSchemePort != 0 {
+		name = fmt.Sprintf("_%d.%s", s.URLSchemePort, name)
+	}
+
+	var params string
+	if s.Priority == 0 && len(s.Params) != 0 {
+		// The SvcParams should be empty in AliasMode, so we'll fix that for
+		// you.
+		params = ""
+	} else {
+		params = paramsToString(s.Params)
+	}
+
+	return libdns.RR{
+		Name: name,
+		TTL:  s.TTL,
+		Type: recType,
+		Data: fmt.Sprintf("%d %s %s", s.Priority, s.Target, params),
+	}
+}
+
+// This function is taken from libdns itself and modified to quote ECH params.
+func paramsToString(params libdns.SvcParams) string {
+	var sb strings.Builder
+	for key, vals := range params {
+		if sb.Len() > 0 {
+			sb.WriteRune(' ')
+		}
+		sb.WriteString(key)
+		var hasVal, needsQuotes bool
+		if key == "ech" {
+			needsQuotes = true
+		}
+		for _, val := range vals {
+			if len(val) > 0 {
+				hasVal = true
+			}
+			if strings.ContainsAny(val, `" `) {
+				needsQuotes = true
+			}
+			if hasVal && needsQuotes {
+				break
+			}
+		}
+		if hasVal {
+			sb.WriteRune('=')
+		}
+		if needsQuotes {
+			sb.WriteRune('"')
+		}
+		for i, val := range vals {
+			if i > 0 {
+				sb.WriteRune(',')
+			}
+			val = strings.ReplaceAll(val, `"`, `\"`)
+			val = strings.ReplaceAll(val, `,`, `\,`)
+			sb.WriteString(val)
+		}
+		if needsQuotes {
+			sb.WriteRune('"')
+		}
+	}
+	return sb.String()
 }
