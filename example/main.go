@@ -10,16 +10,21 @@ import (
 
 func main() {
 	p := &powerdns.Provider{
-		ServerURL: "http://localhost", // required
-		ServerID:  "localhost",        // if left empty, defaults to localhost.
-		APIToken:  "asdfasdfasdf",     // required
+		ServerURL: "http://127.0.0.1:8081/", // required
+		ServerID:  "localhost",              // if left empty, defaults to localhost.
+		APIToken:  "key",                    // required
 	}
 
 	_, err := p.AppendRecords(context.Background(), "example.org.", []libdns.Record{
-		{
-			Name:  "_acme_whatever",
-			Type:  "TXT",
-			Value: "123456",
+		libdns.ServiceBinding{
+			Name:     "pdns-test",
+			Scheme:   "https",
+			TTL:      0,
+			Priority: 1,
+			Target:   "example.org.",
+			Params: libdns.SvcParams{
+				"ech": []string{"asdf"},
+			},
 		},
 	})
 	if err != nil {
