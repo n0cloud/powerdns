@@ -5,7 +5,7 @@ import (
 
 	"github.com/libdns/libdns"
 
-	"github.com/libdns/powerdns"
+	"github.com/n0cloud/powerdns"
 )
 
 func main() {

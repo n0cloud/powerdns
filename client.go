@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/libdns/libdns"
-	"github.com/libdns/powerdns/txtsanitize"
+	"github.com/n0cloud/powerdns/txtsanitize"
 
 	pdns "github.com/mittwald/go-powerdns"
 	"github.com/mittwald/go-powerdns/apis/zones"

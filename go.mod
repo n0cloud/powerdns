@@ -1,4 +1,4 @@
-module github.com/libdns/powerdns
+module github.com/n0cloud/powerdns
 
 go 1.22
 
