@@ -3,6 +3,7 @@ package powerdns
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"reflect"
@@ -135,10 +136,9 @@ func TestPDNSClient(t *testing.T) {
 			zone:      "example.org.",
 			Type:      "A",
 			records: []libdns.Record{
-				{
-					Name:  "2",
-					Type:  "A",
-					Value: "127.0.0.7",
+				libdns.Address{
+					Name: "2",
+					IP:   netip.MustParseAddr("127.0.0.7"),
 				},
 			},
 			want: []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3",
@@ -150,10 +150,9 @@ func TestPDNSClient(t *testing.T) {
 			zone:      "example.org.",
 			Type:      "TXT",
 			records: []libdns.Record{
-				{
-					Name:  "1",
-					Type:  "TXT",
-					Value: "\"This is also some text\"",
+				libdns.TXT{
+					Name: "1",
+					Text: "\"This is also some text\"",
 				},
 			},
 			want: []string{
@@ -167,10 +166,9 @@ func TestPDNSClient(t *testing.T) {
 			zone:      "example.org.",
 			Type:      "TXT",
 			records: []libdns.Record{
-				{
-					Name:  "1",
-					Type:  "TXT",
-					Value: "This is some weird text that isn't quoted",
+				libdns.TXT{
+					Name: "1",
+					Text: "This is some weird text that isn't quoted",
 				},
 			},
 			want: []string{
@@ -185,10 +183,9 @@ func TestPDNSClient(t *testing.T) {
 			zone:      "example.org.",
 			Type:      "TXT",
 			records: []libdns.Record{
-				{
-					Name:  "1",
-					Type:  "TXT",
-					Value: `This is some weird text that "has embedded quoting"`,
+				libdns.TXT{
+					Name: "1",
+					Text: `This is some weird text that "has embedded quoting"`,
 				},
 			},
 			want: []string{`1:"This is text"`, `1:"This is also some text"`,
@@ -201,10 +198,9 @@ func TestPDNSClient(t *testing.T) {
 			zone:      "example.org.",
 			Type:      "TXT",
 			records: []libdns.Record{
-				{
-					Name:  "1",
-					Type:  "TXT",
-					Value: `ç is equal to \195\167`,
+				libdns.TXT{
+					Name: "1",
+					Text: `ç is equal to \195\167`,
 				},
 			},
 			want: []string{`1:"This is text"`, `1:"This is also some text"`,
@@ -219,13 +215,12 @@ func TestPDNSClient(t *testing.T) {
 			zone:      "example.org.",
 			Type:      "A",
 			records: []libdns.Record{
-				{
-					Name:  "2",
-					Type:  "A",
-					Value: "127.0.0.7",
+				libdns.Address{
+					Name: "2",
+					IP:   netip.MustParseAddr("127.0.0.5"),
 				},
 			},
-			want: []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3", "2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6"},
+			want: []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3", "2:127.0.0.4", "2:127.0.0.6", "2:127.0.0.7"},
 		},
 		{
 			name:      "Test Append and Add Zone",
@@ -233,19 +228,17 @@ func TestPDNSClient(t *testing.T) {
 			zone:      "example.org.",
 			Type:      "A",
 			records: []libdns.Record{
-				{
-					Name:  "2",
-					Type:  "A",
-					Value: "127.0.0.8",
+				libdns.Address{
+					Name: "2",
+					IP:   netip.MustParseAddr("127.0.0.8"),
 				},
-				{
-					Name:  "3",
-					Type:  "A",
-					Value: "127.0.0.9",
+				libdns.Address{
+					Name: "3",
+					IP:   netip.MustParseAddr("127.0.0.9"),
 				},
 			},
 			want: []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3",
-				"2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6", "2:127.0.0.8",
+				"2:127.0.0.4", "2:127.0.0.6", "2:127.0.0.7", "2:127.0.0.8",
 				"3:127.0.0.9"},
 		},
 		{
@@ -254,15 +247,13 @@ func TestPDNSClient(t *testing.T) {
 			zone:      "example.org.",
 			Type:      "A",
 			records: []libdns.Record{
-				{
-					Name:  "2",
-					Type:  "A",
-					Value: "127.0.0.1",
+				libdns.Address{
+					Name: "2",
+					IP:   netip.MustParseAddr("127.0.0.1"),
 				},
-				{
-					Name:  "1",
-					Type:  "A",
-					Value: "127.0.0.1",
+				libdns.Address{
+					Name: "1",
+					IP:   netip.MustParseAddr("127.0.0.1"),
 				},
 			},
 			want: []string{"1:127.0.0.1", "2:127.0.0.1", "3:127.0.0.9"},
@@ -294,10 +285,10 @@ func TestPDNSClient(t *testing.T) {
 			}
 			var have []string
 			for _, rr := range recs {
-				if rr.Type != table.Type {
+				if rr.RR().Type != table.Type {
 					continue
 				}
-				have = append(have, fmt.Sprintf("%s:%s", rr.Name, rr.Value))
+				have = append(have, fmt.Sprintf("%s:%s", rr.RR().Name, rr.RR().Data))
 			}
 
 			sort.Strings(have)
