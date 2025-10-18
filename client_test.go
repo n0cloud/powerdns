@@ -40,7 +40,7 @@ func TestPDNSClient(t *testing.T) {
 	}
 	defer func() {
 		if skipCleanup, _ := strconv.ParseBool(os.Getenv("PDNS_SKIP_CLEANUP")); !skipCleanup {
-			runCmd(docker, "down", "-v")
+			runCmd(docker, "compose", "down", "-v")
 		}
 	}()
 
