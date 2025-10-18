@@ -17,30 +17,30 @@ import (
 )
 
 func TestPDNSClient(t *testing.T) {
-	var dockerCompose string
+	var docker string
 	var ok bool
 	doRun, _ := strconv.ParseBool(os.Getenv("PDNS_RUN_INTEGRATION_TEST"))
 	if !doRun {
 		t.Skip("skipping because PDNS_RUN_INTEGRATION_TEST was not set")
 	}
-	if dockerCompose, ok = which("docker-compose"); !ok {
-		t.Skip("docker-compose is not present, skipping")
+	if docker, ok = which("docker"); !ok {
+		t.Skip("docker compose is not present, skipping")
 	}
-	err := runCmd(dockerCompose, "rm", "-sfv")
+	err := runCmd(docker, "compose", "rm", "-sfv")
 	if err != nil {
-		t.Fatalf("docker-compose failed: %s", err)
+		t.Fatalf("docker compose failed: %s", err)
 	}
-	err = runCmd(dockerCompose, "down", "-v")
+	err = runCmd(docker, "compose", "down", "-v")
 	if err != nil {
-		t.Fatalf("docker-compose failed: %s", err)
+		t.Fatalf("docker compose failed: %s", err)
 	}
-	err = runCmd(dockerCompose, "up", "-d")
+	err = runCmd(docker, "compose", "up", "-d")
 	if err != nil {
-		t.Fatalf("docker-compose failed: %s", err)
+		t.Fatalf("docker compose failed: %s", err)
 	}
 	defer func() {
 		if skipCleanup, _ := strconv.ParseBool(os.Getenv("PDNS_SKIP_CLEANUP")); !skipCleanup {
-			runCmd(dockerCompose, "down", "-v")
+			runCmd(docker, "down", "-v")
 		}
 	}()
 
