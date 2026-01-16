@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/joeig/go-powerdns/v3"
 	"github.com/libdns/libdns"
 )
 
@@ -40,18 +41,25 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 	if err != nil {
 		return nil, err
 	}
-	prec, err := c.fullZone(ctx, zone)
+	fullZone, err := c.getZone(ctx, zone)
 	if err != nil {
 		return nil, err
 	}
-	recs := make([]libdns.Record, 0, len(prec.ResourceRecordSets))
-	for _, rec := range prec.ResourceRecordSets {
-		for _, v := range rec.Records {
+	recs := make([]libdns.Record, 0)
+	for _, rrset := range fullZone.RRsets {
+		if rrset.Type == nil {
+			continue
+		}
+		rrType := string(*rrset.Type)
+		rrName := powerdns.StringValue(rrset.Name)
+		ttl := time.Second * time.Duration(powerdns.Uint32Value(rrset.TTL))
+		for _, r := range rrset.Records {
+			content := powerdns.StringValue(r.Content)
 			lrec, err := (libdns.RR{
-				Type: rec.Type,
-				Name: libdns.RelativeName(rec.Name, zone),
-				Data: v.Content,
-				TTL:  time.Second * time.Duration(rec.TTL),
+				Type: rrType,
+				Name: libdns.RelativeName(rrName, zone),
+				Data: content,
+				TTL:  ttl,
 			}).Parse()
 			if err != nil {
 				return nil, err
@@ -68,18 +76,45 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 	if err != nil {
 		return nil, err
 	}
-	fullZone, err := c.fullZone(ctx, zone)
+
+	// Get current zone state
+	fullZone, err := c.getZone(ctx, zone)
 	if err != nil {
 		return nil, err
 	}
-	rrecs, err := mergeRRecs(fullZone, convertNamesToAbsolute(zone, records))
-	if err != nil {
-		return nil, err
+
+	// Convert input records to absolute names
+	absRecords := convertNamesToAbsolute(zone, records)
+	recHash := makeLDRecHash(absRecords)
+
+	// Process each unique name+type combination
+	for _, recs := range recHash {
+		if len(recs) == 0 {
+			continue
+		}
+
+		name := recs[0].Name
+		rrType := recs[0].Type
+		ttl := uint32(recs[0].TTL.Seconds())
+
+		// Get new content values
+		newContents := make([]string, 0, len(recs))
+		for _, r := range recs {
+			newContents = append(newContents, r.Data)
+		}
+
+		// Find existing RRset and merge
+		existingRRset := findRRset(fullZone, name, rrType)
+		existingContents := rrsetContents(existingRRset)
+		mergedContents := mergeContents(existingContents, newContents)
+
+		// Use Records.Change to update (works for both new and existing)
+		err = c.Records.Change(ctx, zone, name, powerdns.RRType(rrType), ttl, mergedContents)
+		if err != nil {
+			return nil, err
+		}
 	}
-	err = c.updateRRs(ctx, fullZone.ID, rrecs)
-	if err != nil {
-		return nil, err
-	}
+
 	return records, nil
 }
 
@@ -90,16 +125,34 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 	if err != nil {
 		return nil, err
 	}
-	zID, err := c.zoneID(ctx, zone)
-	if err != nil {
-		return nil, err
+
+	// Convert input records to absolute names
+	absRecords := convertNamesToAbsolute(zone, records)
+	recHash := makeLDRecHash(absRecords)
+
+	// Process each unique name+type combination
+	for _, recs := range recHash {
+		if len(recs) == 0 {
+			continue
+		}
+
+		name := recs[0].Name
+		rrType := recs[0].Type
+		ttl := uint32(recs[0].TTL.Seconds())
+
+		// Collect all content values for this name+type
+		contents := make([]string, 0, len(recs))
+		for _, r := range recs {
+			contents = append(contents, r.Data)
+		}
+
+		// Use Records.Change to replace
+		err = c.Records.Change(ctx, zone, name, powerdns.RRType(rrType), ttl, contents)
+		if err != nil {
+			return nil, err
+		}
 	}
-	inHash := makeLDRecHash(convertNamesToAbsolute(zone, records))
-	rRecs := convertLDHash(inHash)
-	err = c.updateRRs(ctx, zID, rRecs)
-	if err != nil {
-		return nil, err
-	}
+
 	return records, nil
 }
 
@@ -109,19 +162,60 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 	if err != nil {
 		return nil, err
 	}
-	fullZone, err := c.fullZone(ctx, zone)
+
+	// Get current zone state
+	fullZone, err := c.getZone(ctx, zone)
 	if err != nil {
 		return nil, err
 	}
 
-	rRSets := cullRRecs(fullZone, convertNamesToAbsolute(zone, records))
-	err = c.updateRRs(ctx, fullZone.ID, rRSets)
-	if err != nil {
-		return nil, err
+	// Convert input records to absolute names
+	absRecords := convertNamesToAbsolute(zone, records)
+	recHash := makeLDRecHash(absRecords)
+
+	// Process each unique name+type combination
+	for _, recs := range recHash {
+		if len(recs) == 0 {
+			continue
+		}
+
+		name := recs[0].Name
+		rrType := recs[0].Type
+
+		// Find existing RRset
+		existingRRset := findRRset(fullZone, name, rrType)
+		if existingRRset == nil {
+			// Nothing to delete
+			continue
+		}
+
+		// Get contents to remove
+		toRemove := make([]string, 0, len(recs))
+		for _, r := range recs {
+			toRemove = append(toRemove, r.Data)
+		}
+
+		// Remove specified contents from existing
+		existingContents := rrsetContents(existingRRset)
+		remainingContents := removeContents(existingContents, toRemove)
+
+		if len(remainingContents) == 0 {
+			// Delete entire RRset
+			err = c.Records.Delete(ctx, zone, name, powerdns.RRType(rrType))
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Update with remaining contents
+			ttl := powerdns.Uint32Value(existingRRset.TTL)
+			err = c.Records.Change(ctx, zone, name, powerdns.RRType(rrType), ttl, remainingContents)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	return records, nil
-
 }
 
 func (p *Provider) client() (*client, error) {

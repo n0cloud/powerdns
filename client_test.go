@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joeig/go-powerdns/v3"
 	"github.com/libdns/libdns"
-	"github.com/mittwald/go-powerdns/apis/zones"
 )
 
 func TestPDNSClient(t *testing.T) {
@@ -45,60 +45,7 @@ func TestPDNSClient(t *testing.T) {
 	}()
 
 	time.Sleep(time.Second * 30) // give everything time to finish coming up
-	z := zones.Zone{
-		Name: "example.org.",
-		Type: zones.ZoneTypeZone,
-		Kind: zones.ZoneKindNative,
-		ResourceRecordSets: []zones.ResourceRecordSet{
-			{
-				Name: "1.example.org.",
-				Type: "A",
-				TTL:  60,
-				Records: []zones.Record{
-					{
-						Content: "127.0.0.1",
-					},
-					{
-						Content: "127.0.0.2",
-					},
-					{
-						Content: "127.0.0.3",
-					},
-				},
-			},
-			{
-				Name: "1.example.org.",
-				Type: "TXT",
-				TTL:  60,
-				Records: []zones.Record{
-					{
-						Content: "\"This is text\"",
-					},
-				},
-			},
-			{
-				Name: "2.example.org.",
-				Type: "A",
-				TTL:  60,
-				Records: []zones.Record{
-					{
-						Content: "127.0.0.4",
-					},
-					{
-						Content: "127.0.0.5",
-					},
-					{
-						Content: "127.0.0.6",
-					},
-				},
-			},
-		},
-		Serial: 1,
-		Nameservers: []string{
-			"ns1.example.org.",
-			"ns2.example.org.",
-		},
-	}
+
 	p := &Provider{
 		ServerURL: "http://localhost:8081",
 		ServerID:  "localhost",
@@ -109,9 +56,31 @@ func TestPDNSClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not create client: %s", err)
 	}
-	_, err = c.Client.Zones().CreateZone(context.Background(), c.sID, z)
+
+	// Create test zone using the new library
+	ctx := context.Background()
+	zoneName := "example.org."
+	nameservers := []string{"ns1.example.org.", "ns2.example.org."}
+
+	_, err = c.Zones.AddNative(ctx, zoneName, false, "", false, "", "", false, nameservers)
 	if err != nil {
 		t.Fatalf("failed to create test zone: %s", err)
+	}
+
+	// Add initial records to the zone
+	err = c.Records.Add(ctx, zoneName, "1.example.org.", powerdns.RRTypeA, 60, []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"})
+	if err != nil {
+		t.Fatalf("failed to add A records: %s", err)
+	}
+
+	err = c.Records.Add(ctx, zoneName, "1.example.org.", powerdns.RRTypeTXT, 60, []string{`"This is text"`})
+	if err != nil {
+		t.Fatalf("failed to add TXT record: %s", err)
+	}
+
+	err = c.Records.Add(ctx, zoneName, "2.example.org.", powerdns.RRTypeA, 60, []string{"127.0.0.4", "127.0.0.5", "127.0.0.6"})
+	if err != nil {
+		t.Fatalf("failed to add A records for subdomain 2: %s", err)
 	}
 
 	for _, table := range []struct {

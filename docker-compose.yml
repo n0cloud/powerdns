@@ -1,6 +1,6 @@
 services:
   powerdns:
-    image: powerdns/pdns-auth-49
+    image: powerdns/pdns-auth-51
     networks:
       - backend
     volumes:

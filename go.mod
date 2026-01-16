@@ -1,8 +1,8 @@
 module github.com/libdns/powerdns
 
-go 1.16
+go 1.22.7
 
 require (
-	github.com/libdns/libdns v1.0.0-beta.1
-	github.com/mittwald/go-powerdns v0.6.6
+	github.com/joeig/go-powerdns/v3 v3.20.0
+	github.com/libdns/libdns v1.1.1
 )

@@ -4,196 +4,136 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httputil"
 	"strings"
 
+	"github.com/joeig/go-powerdns/v3"
 	"github.com/libdns/libdns"
 	"github.com/libdns/powerdns/txtsanitize"
-
-	pdns "github.com/mittwald/go-powerdns"
-	"github.com/mittwald/go-powerdns/apis/zones"
 )
 
 type client struct {
-	sID string
-	pdns.Client
+	*powerdns.Client
 }
 
-func newClient(ServerID, ServerURL, APIToken string, debug io.Writer) (*client, error) {
-	if debug == nil {
-		debug = io.Discard
-	}
-	c, err := pdns.New(
-		pdns.WithBaseURL(ServerURL),
-		pdns.WithAPIKeyAuthentication(APIToken),
-		pdns.WithDebuggingOutput(debug),
-	)
+// debugTransport wraps http.RoundTripper to log requests/responses
+type debugTransport struct {
+	transport http.RoundTripper
+	output    io.Writer
+}
+
+func (d *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	dump, _ := httputil.DumpRequestOut(req, true)
+	fmt.Fprintf(d.output, "Request:\n%s\n", dump)
+
+	resp, err := d.transport.RoundTrip(req)
 	if err != nil {
-		return nil, err
+		return resp, err
 	}
-	return &client{
-		sID:    ServerID,
-		Client: c,
-	}, nil
+
+	dump, _ = httputil.DumpResponse(resp, true)
+	fmt.Fprintf(d.output, "Response:\n%s\n", dump)
+
+	return resp, nil
 }
 
-func (c *client) updateRRs(ctx context.Context, zoneID string, recs []zones.ResourceRecordSet) error {
-	for _, rec := range recs {
-		err := c.Zones().AddRecordSetToZone(ctx, c.sID, zoneID, rec)
-		if err != nil {
-			return err
+func newClient(serverID, serverURL, apiToken string, debug io.Writer) (*client, error) {
+	opts := []powerdns.NewOption{
+		powerdns.WithAPIKey(apiToken),
+	}
+
+	if debug != nil {
+		httpClient := &http.Client{
+			Transport: &debugTransport{
+				transport: http.DefaultTransport,
+				output:    debug,
+			},
+		}
+		opts = append(opts, powerdns.WithHTTPClient(httpClient))
+	}
+
+	c := powerdns.New(serverURL, serverID, opts...)
+	return &client{Client: c}, nil
+}
+
+// getZone retrieves the full zone with all RRsets
+func (c *client) getZone(ctx context.Context, zoneName string) (*powerdns.Zone, error) {
+	return c.Zones.Get(ctx, zoneName)
+}
+
+// findRRset finds an RRset in a zone by name and type
+func findRRset(zone *powerdns.Zone, name, rrType string) *powerdns.RRset {
+	for _, rrset := range zone.RRsets {
+		if powerdns.StringValue(rrset.Name) == name && rrset.Type != nil && string(*rrset.Type) == rrType {
+			return &rrset
 		}
 	}
 	return nil
 }
 
-func mergeRRecs(fullZone *zones.Zone, records []libdns.RR) ([]zones.ResourceRecordSet, error) {
-	// pdns doesn't really have an append functionality, so we have to fake it by
-	// fetching existing rrsets for the zone and see if any already exist.  If so,
-	// merge those with the existing data.  Otherwise just add the record.
-	inHash := makeLDRecHash(records)
-	var rrsets []zones.ResourceRecordSet
-	// Merge existing resource record sets with any that were passed in to modify.
-	for _, t := range fullZone.ResourceRecordSets {
-		k := key(t.Name, t.Type)
-		if recs, ok := inHash[k]; ok && len(recs) > 0 {
-			rr := zones.ResourceRecordSet{
-				Name:       t.Name,
-				Type:       t.Type,
-				TTL:        int(recs[0].TTL.Seconds()),
-				ChangeType: zones.ChangeTypeReplace,
-				Comments:   t.Comments,
-				Records:    make([]zones.Record, len(t.Records)),
-			}
-			copy(rr.Records, t.Records)
-			// squash duplicate values
-			dupes := make(map[string]bool)
-			for _, prec := range t.Records {
-				dupes[prec.Content] = true
-			}
-			// now for our additions
-			for _, rec := range recs {
-				if !dupes[rec.Data] {
-					rr.Records = append(rr.Records, zones.Record{
-						Content: rec.Data,
-					})
-					dupes[rec.Data] = true
-				}
-			}
-			rrsets = append(rrsets, rr)
-			delete(inHash, k)
-		}
+// rrsetContents extracts content strings from an RRset
+func rrsetContents(rrset *powerdns.RRset) []string {
+	if rrset == nil {
+		return nil
 	}
-	// Any remaining in our input hash need to be straight adds / creates.
-	rrsets = append(rrsets, convertLDHash(inHash)...)
-	return rrsets, nil
+	contents := make([]string, 0, len(rrset.Records))
+	for _, r := range rrset.Records {
+		contents = append(contents, powerdns.StringValue(r.Content))
+	}
+	return contents
 }
 
-// generate RessourceRecordSets that will delete records from zone
-func cullRRecs(fullZone *zones.Zone, records []libdns.RR) []zones.ResourceRecordSet {
-	inHash := makeLDRecHash(records)
-	var rRSets []zones.ResourceRecordSet
-	for _, t := range fullZone.ResourceRecordSets {
-		k := key(t.Name, t.Type)
-		if recs, ok := inHash[k]; ok && len(recs) > 0 {
-			rRec := removeRecords(t, recs)
-			if len(rRec.Records) == 0 {
-				rRec.ChangeType = zones.ChangeTypeDelete
-			} else {
-				rRec.ChangeType = zones.ChangeTypeReplace
-			}
-			rRSets = append(rRSets, rRec)
+// mergeContents merges existing contents with new ones, deduplicating
+func mergeContents(existing, new []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(existing)+len(new))
+
+	for _, c := range existing {
+		normalized := strings.TrimSuffix(c, ".")
+		if !seen[normalized] {
+			seen[normalized] = true
+			result = append(result, c)
 		}
 	}
-	return rRSets
-
+	for _, c := range new {
+		normalized := strings.TrimSuffix(c, ".")
+		if !seen[normalized] {
+			seen[normalized] = true
+			result = append(result, c)
+		}
+	}
+	return result
 }
 
-// remove culls from rRSet record values
-func removeRecords(rRSet zones.ResourceRecordSet, culls []libdns.RR) zones.ResourceRecordSet {
-	deleteItem := func(item string) []zones.Record {
-		recs := rRSet.Records
-		for i := len(recs) - 1; i >= 0; i-- {
-			if recs[i].Content == item {
-				recs = append(recs[:i], recs[i+1:]...)
-			}
+// removeContents removes specified contents from existing, returns remaining
+func removeContents(existing, toRemove []string) []string {
+	remove := make(map[string]bool)
+	for _, c := range toRemove {
+		remove[strings.TrimSuffix(c, ".")] = true
+	}
+
+	result := make([]string, 0, len(existing))
+	for _, c := range existing {
+		if !remove[strings.TrimSuffix(c, ".")] {
+			result = append(result, c)
 		}
-		return recs
 	}
-	for _, c := range culls {
-		rRSet.Records = deleteItem(c.Data)
-	}
-	return rRSet
+	return result
 }
 
-func convertLDHash(inHash map[string][]libdns.RR) []zones.ResourceRecordSet {
-	var rrsets []zones.ResourceRecordSet
-	for _, recs := range inHash {
-		if len(recs) == 0 {
-			continue
-		}
-
-		rr := zones.ResourceRecordSet{
-			Name:       recs[0].Name,
-			Type:       recs[0].Type,
-			TTL:        int(recs[0].TTL.Seconds()),
-			ChangeType: zones.ChangeTypeReplace,
-		}
-		for _, rec := range recs {
-			rr.Records = append(rr.Records, zones.Record{
-				Content: rec.Data,
-			})
-		}
-		rrsets = append(rrsets, rr)
-	}
-	return rrsets
-}
-
-func key(Name, Type string) string {
-	return Name + ":" + Type
+func key(name, rrType string) string {
+	return name + ":" + rrType
 }
 
 func makeLDRecHash(records []libdns.RR) map[string][]libdns.RR {
 	// Keep track of records grouped by name + type
 	inHash := make(map[string][]libdns.RR)
-
 	for _, r := range records {
 		k := key(r.Name, r.Type)
 		inHash[k] = append(inHash[k], r)
 	}
 	return inHash
-}
-
-func (c *client) fullZone(ctx context.Context, zoneName string) (*zones.Zone, error) {
-	zc := c.Zones()
-	shortZone, err := c.shortZone(ctx, zoneName)
-	if err != nil {
-		return nil, err
-	}
-	fullZone, err := zc.GetZone(ctx, c.sID, shortZone.ID)
-	if err != nil {
-		return nil, err
-	}
-	return fullZone, nil
-}
-
-func (c *client) shortZone(ctx context.Context, zoneName string) (*zones.Zone, error) {
-	zc := c.Zones()
-	shortZones, err := zc.ListZone(ctx, c.sID, zoneName)
-	if err != nil {
-		return nil, err
-	}
-	if len(shortZones) != 1 {
-		return nil, fmt.Errorf("zone not found")
-	}
-	return &shortZones[0], nil
-}
-
-func (c *client) zoneID(ctx context.Context, zoneName string) (string, error) {
-	shortZone, err := c.shortZone(ctx, zoneName)
-	if err != nil {
-		return "", err
-	}
-	return shortZone.ID, nil
 }
 
 func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.RR {
